@@ -6,7 +6,6 @@ import warp as wp
 from phantomgaze import ScreenBuffer
 from phantomgaze import SolidColor
 from phantomgaze.objects import Geometry
-#from phantomgaze.utils.math import normalize, dot
 from phantomgaze.render.camera import calculate_ray_direction
 
 _geometry_render_kernels = {}

@@ -6,7 +6,6 @@ from numba import cuda
 
 from phantomgaze import ScreenBuffer
 from phantomgaze import Colormap, SolidColor
-#from phantomgaze.utils.math import normalize, dot, cross
 from phantomgaze.render.camera import calculate_ray_direction
 from phantomgaze.render.utils import sample_array, sample_array_derivative, ray_intersect_box
 from phantomgaze.render.color import scalar_to_color

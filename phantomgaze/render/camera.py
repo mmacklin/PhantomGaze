@@ -2,7 +2,6 @@
 
 import warp as wp
 
-#from phantomgaze.utils.math import normalize, dot, cross
 
 @wp.func
 def calculate_ray_direction(
