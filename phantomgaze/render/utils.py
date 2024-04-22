@@ -2,17 +2,14 @@
 # TODO: Find better place for these functions
 
 import cupy as cp
-import numba
-from numba import cuda
+import warp as wp
 
-from phantomgaze.utils.math import normalize, dot, cross
-
-@cuda.jit(device=True)
+@wp.func
 def _safe_index_array(
-        array,
-        i,
-        j,
-        k):
+        array: wp.array3d(dtype=float),
+        i: int,
+        j: int,
+        k: int):
     """Get an index of an array, clamping to the array bounds.
 
     Parameters
@@ -38,19 +35,19 @@ def _safe_index_array(
     # Return the value at the index
     return array[i, j, k]
 
-@cuda.jit(device=True)
+@wp.func
 def _trilinear_interpolation(
-        v_000,
-        v_100,
-        v_010,
-        v_110,
-        v_001,
-        v_101,
-        v_011,
-        v_111,
-        dx,
-        dy,
-        dz):
+        v_000: float,
+        v_100: float,
+        v_010: float,
+        v_110: float,
+        v_001: float,
+        v_101: float,
+        v_011: float,
+        v_111: float,
+        dx: float,
+        dy: float,
+        dz: float):
     """Perform trilinear interpolation on 8 points.
 
     Parameters
@@ -69,23 +66,23 @@ def _trilinear_interpolation(
     """
 
     # Compute the interpolation
-    v_00 = v_000 * (1 - dx) + v_100 * dx
-    v_10 = v_010 * (1 - dx) + v_110 * dx
-    v_01 = v_001 * (1 - dx) + v_101 * dx
-    v_11 = v_011 * (1 - dx) + v_111 * dx
-    v_0 = v_00 * (1 - dy) + v_10 * dy
-    v_1 = v_01 * (1 - dy) + v_11 * dy
-    v = v_0 * (1 - dz) + v_1 * dz
+    v_00 = v_000 * (1.0 - dx) + v_100 * dx
+    v_10 = v_010 * (1.0 - dx) + v_110 * dx
+    v_01 = v_001 * (1.0 - dx) + v_101 * dx
+    v_11 = v_011 * (1.0 - dx) + v_111 * dx
+    v_0 = v_00 * (1.0 - dy) + v_10 * dy
+    v_1 = v_01 * (1.0 - dy) + v_11 * dy
+    v = v_0 * (1.0 - dz) + v_1 * dz
 
     # Return the interpolated value
     return v
 
-@cuda.jit(device=True)
+@wp.func
 def sample_array(
-        array,
-        spacing,
-        origin,
-        position):
+        array: wp.array3d(dtype=float),
+        spacing: wp.vec3,
+        origin: wp.vec3,
+        position: wp.vec3):
     """Sample an array at a given position.
     Uses trilinear interpolation.
 
@@ -107,9 +104,9 @@ def sample_array(
     k = int((position[2] - origin[2]) / spacing[2])
 
     # Get the fractional part of the indices
-    dx = (position[0] - origin[0]) / spacing[0] - i
-    dy = (position[1] - origin[1]) / spacing[1] - j
-    dz = (position[2] - origin[2]) / spacing[2] - k
+    dx = (position[0] - origin[0]) / spacing[0] - float(i)
+    dy = (position[1] - origin[1]) / spacing[1] - float(j)
+    dz = (position[2] - origin[2]) / spacing[2] - float(k)
 
     # Sample the array at the indices
     v_000 = _safe_index_array(array, i, j, k)
@@ -135,12 +132,12 @@ def sample_array(
         dy,
         dz)
 
-@cuda.jit(device=True)
+@wp.func
 def sample_array_derivative(
-        array,
-        spacing,
-        origin,
-        position):
+        array: wp.array3d(dtype=float),
+        spacing: wp.vec3,
+        origin: wp.vec3,
+        position: wp.vec3):
     """Compute the derivative of an array at a given position.
 
     Parameters
@@ -156,12 +153,12 @@ def sample_array_derivative(
     """
 
     # Move the position by a small amount
-    value_0_1_1 = sample_array(array, spacing, origin, (position[0] - spacing[0]/2.0, position[1], position[2]))
-    value_1_0_1 = sample_array(array, spacing, origin, (position[0], position[1] - spacing[1]/2.0, position[2]))
-    value_1_1_0 = sample_array(array, spacing, origin, (position[0], position[1], position[2] - spacing[2]/2.0))
-    value_2_1_1 = sample_array(array, spacing, origin, (position[0] + spacing[0]/2.0, position[1], position[2]))
-    value_1_2_1 = sample_array(array, spacing, origin, (position[0], position[1] + spacing[1]/2.0, position[2]))
-    value_1_1_2 = sample_array(array, spacing, origin, (position[0], position[1], position[2] + spacing[2]/2.0))
+    value_0_1_1 = sample_array(array, spacing, origin, wp.vec3(position[0] - spacing[0]/2.0, position[1], position[2]))
+    value_1_0_1 = sample_array(array, spacing, origin, wp.vec3(position[0], position[1] - spacing[1]/2.0, position[2]))
+    value_1_1_0 = sample_array(array, spacing, origin, wp.vec3(position[0], position[1], position[2] - spacing[2]/2.0))
+    value_2_1_1 = sample_array(array, spacing, origin, wp.vec3(position[0] + spacing[0]/2.0, position[1], position[2]))
+    value_1_2_1 = sample_array(array, spacing, origin, wp.vec3(position[0], position[1] + spacing[1]/2.0, position[2]))
+    value_1_1_2 = sample_array(array, spacing, origin, wp.vec3(position[0], position[1], position[2] + spacing[2]/2.0))
 
     # Compute the derivative
     array_dx = (value_2_1_1 - value_0_1_1) / spacing[0]
@@ -169,15 +166,15 @@ def sample_array_derivative(
     array_dz = (value_1_1_2 - value_1_1_0) / spacing[2]
 
     # Return the derivative
-    return (array_dx, array_dy, array_dz)
+    return wp.vec3(array_dx, array_dy, array_dz)
 
 
-@cuda.jit(device=True)
+@wp.func
 def ray_intersect_box(
-        box_origin,
-        box_upper,
-        ray_origin,
-        ray_direction):
+        box_origin: wp.vec3,
+        box_upper: wp.vec3,
+        ray_origin: wp.vec3,
+        ray_direction: wp.vec3):
     """Compute the intersection of a ray with a box.
 
     Parameters
@@ -201,16 +198,16 @@ def ray_intersect_box(
     tmax_z = (box_upper[2] - ray_origin[2]) / ray_direction[2]
 
     # Get tmin and tmax
-    tmmin_x = min(tmin_x, tmax_x)
-    tmmax_x = max(tmin_x, tmax_x)
-    tmmin_y = min(tmin_y, tmax_y)
-    tmmax_y = max(tmin_y, tmax_y)
-    tmmin_z = min(tmin_z, tmax_z)
-    tmmax_z = max(tmin_z, tmax_z)
+    tmmin_x = wp.min(tmin_x, tmax_x)
+    tmmax_x = wp.max(tmin_x, tmax_x)
+    tmmin_y = wp.min(tmin_y, tmax_y)
+    tmmax_y = wp.max(tmin_y, tmax_y)
+    tmmin_z = wp.min(tmin_z, tmax_z)
+    tmmax_z = wp.max(tmin_z, tmax_z)
 
     # Get t0 and t1
-    t0 = max(0.0, max(tmmin_x, max(tmmin_y, tmmin_z)))
-    t1 = min(tmmax_x, min(tmmax_y, tmmax_z))
+    t0 = wp.max(0.0, wp.max(tmmin_x, wp.max(tmmin_y, tmmin_z)))
+    t1 = wp.min(tmmax_x, wp.min(tmmax_y, tmmax_z))
 
     # Return the intersection
     return t0, t1

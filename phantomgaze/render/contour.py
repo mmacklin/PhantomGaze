@@ -1,39 +1,36 @@
 # Render functions for rendering a contour of a volume.
 
 import cupy as cp
-import numba
-from numba import cuda
+import warp as wp
 
 from phantomgaze import ScreenBuffer
 from phantomgaze import Colormap, SolidColor
 from phantomgaze.render.camera import calculate_ray_direction
 from phantomgaze.render.utils import sample_array, sample_array_derivative, ray_intersect_box
-from phantomgaze.utils.math import normalize, dot, cross
 from phantomgaze.render.color import scalar_to_color
 
-
-@cuda.jit
+@wp.kernel
 def contour_kernel(
-        volume_array,
-        spacing,
-        origin,
-        camera_position,
-        camera_focal,
-        camera_up,
-        max_depth,
-        threshold,
-        color_array,
-        color_map_array,
-        vmin,
-        vmax,
-        nan_color,
-        nan_opacity,
-        opaque,
-        opaque_pixel_buffer,
-        depth_buffer,
-        normal_buffer,
-        transparent_pixel_buffer,
-        revealage_buffer):
+        volume_array: wp.array3d(dtype=float),
+        spacing: wp.vec3,
+        origin: wp.vec3,
+        camera_position: wp.vec3,
+        camera_focal: wp.vec3,
+        camera_up: wp.vec3,
+        max_depth: float,
+        threshold: float,
+        color_array: wp.array3d(dtype=float),
+        color_map_array: wp.array2d(dtype=float),
+        vmin: float,
+        vmax: float,
+        nan_color: wp.vec3,
+        nan_opacity: float,
+        opaque: bool,
+        opaque_pixel_buffer: wp.array3d(dtype=float),
+        depth_buffer: wp.array2d(dtype=float),
+        normal_buffer: wp.array3d(dtype=float),
+        transparent_pixel_buffer: wp.array3d(dtype=float),
+        revealage_buffer: wp.array2d(dtype=float)):
 
     """Kernel for rendering a contour of a volume.
 
@@ -82,7 +79,7 @@ def contour_kernel(
     """
 
     # Get the x and y indices
-    x, y = cuda.grid(2)
+    x, y = wp.tid()
 
     # Make sure the indices are in bounds
     if x >= opaque_pixel_buffer.shape[1] or y >= opaque_pixel_buffer.shape[0]:
@@ -90,14 +87,14 @@ def contour_kernel(
 
     # Get ray direction
     ray_direction = calculate_ray_direction(
-            x, y, opaque_pixel_buffer.shape,
+            x, y, opaque_pixel_buffer.shape[0], opaque_pixel_buffer.shape[1],
             camera_position, camera_focal, camera_up)
 
     # Get volume upper bound
-    volume_upper = (
-        origin[0] + spacing[0] * volume_array.shape[0],
-        origin[1] + spacing[1] * volume_array.shape[1],
-        origin[2] + spacing[2] * volume_array.shape[2]
+    volume_upper = wp.vec3(
+        origin[0] + spacing[0] * float(volume_array.shape[0]),
+        origin[1] + spacing[1] * float(volume_array.shape[1]),
+        origin[2] + spacing[2] * float(volume_array.shape[2])
     )
 
     # Get the intersection of the ray with the volume
@@ -109,20 +106,22 @@ def contour_kernel(
         return
 
     # Get the starting point of the ray
-    ray_pos = (
+    ray_pos = wp.vec3(
         camera_position[0] + t0 * ray_direction[0],
         camera_position[1] + t0 * ray_direction[1],
         camera_position[2] + t0 * ray_direction[2]
     )
 
     # Get the step size
-    step_size = min(spacing[0], min(spacing[1], spacing[2]))
+    step_size = wp.min(spacing[0], wp.min(spacing[1], spacing[2]))
 
     # Set starting value to lowest possible value
     value = sample_array(volume_array, spacing, origin, ray_pos)
 
     # Inside-outside stored in the sign
-    sign = 1 if value > threshold else -1
+    sign = -1
+    if value > threshold:
+        sign = 1
 
     # Start the ray marching
     distance = t0
@@ -132,7 +131,7 @@ def contour_kernel(
             return
 
         # Get next step position
-        next_ray_pos = (
+        next_ray_pos = wp.vec3(
             ray_pos[0] + step_size * ray_direction[0],
             ray_pos[1] + step_size * ray_direction[1],
             ray_pos[2] + step_size * ray_direction[2]
@@ -142,26 +141,25 @@ def contour_kernel(
         next_value = sample_array(volume_array, spacing, origin, next_ray_pos)
 
         # If contour is crossed, set the color and depth
-        if (next_value - threshold) * sign < 0:
+        if (next_value - threshold) * float(sign) < 0.0:
             # Update the sign
             sign = -sign
 
             # Linearly interpolate the position
             t = (threshold - value) / (next_value - value)
-            pos_contour = (
+            pos_contour = wp.vec3(
                 ray_pos[0] + t * step_size * ray_direction[0],
                 ray_pos[1] + t * step_size * ray_direction[1],
                 ray_pos[2] + t * step_size * ray_direction[2]
             )
 
             # Get gradient
-            gradient = sample_array_derivative(
-                volume_array, spacing, origin, pos_contour)
-            gradient = normalize(gradient)
+            gradient = sample_array_derivative(volume_array, spacing, origin, pos_contour)
+            gradient = wp.normalize(gradient)
 
             # Calculate intensity
-            intensity = dot(gradient, ray_direction)
-            intensity = abs(intensity)
+            intensity = wp.dot(gradient, ray_direction)
+            intensity = wp.abs(intensity)
 
             # Get the color
             scalar = sample_array(color_array, spacing, origin, pos_contour)
@@ -169,8 +167,8 @@ def contour_kernel(
                 scalar, color_map_array, vmin, vmax)
 
             # if the color is nan, set it to the nan color
-            if color[0] == cp.nan:
-                color = (nan_color[0], nan_color[1], nan_color[2], nan_opacity)
+            if color[0] != color[0]:
+                color = wp.vec4(nan_color[0], nan_color[1], nan_color[2], nan_opacity)
 
             # If opaque, set the opaque pixel buffer
             if opaque:
@@ -234,13 +232,6 @@ def contour(volume, camera, threshold, color=None, colormap=None, screen_buffer=
     if screen_buffer is None:
         screen_buffer = ScreenBuffer.from_camera(camera)
 
-    # Set up thread blocks
-    threads_per_block = (16, 16)
-    blocks = (
-        (screen_buffer.width + threads_per_block[0] - 1) // threads_per_block[0],
-        (screen_buffer.height + threads_per_block[1] - 1) // threads_per_block[1]
-    )
-
     # Get color data if necessary
     if color is None:
         color_array = cp.zeros(volume.shape, dtype=cp.float32)
@@ -249,10 +240,16 @@ def contour(volume, camera, threshold, color=None, colormap=None, screen_buffer=
     else:
         color_array = color.array
         if colormap is None:
-            colormap = Colormap('jet', float(color_array.min()), float(color_array.max()))
+
+            host_color_array = color_array.numpy()
+
+            range_min = host_color_array.min()
+            range_max = host_color_array.max()
+
+            colormap = Colormap('jet', float(range_min), float(range_max))
 
     # Run kernel
-    contour_kernel[blocks, threads_per_block](
+    wp.launch(contour_kernel, dim=[screen_buffer.width, screen_buffer.height], inputs=[
         volume.array,
         volume.spacing,
         volume.origin,
@@ -272,7 +269,7 @@ def contour(volume, camera, threshold, color=None, colormap=None, screen_buffer=
         screen_buffer.depth_buffer,
         screen_buffer.normal_buffer,
         screen_buffer.transparent_pixel_buffer,
-        screen_buffer.revealage_buffer
+        screen_buffer.revealage_buffer]
     )
 
     return screen_buffer

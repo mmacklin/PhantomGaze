@@ -25,5 +25,5 @@ if __name__ == "__main__":
     screen_buffer = pg.render.geometry(box_frame, camera, color=color, screen_buffer=screen_buffer)
 
     # Plot the result
-    plt.imshow(screen_buffer.image.get())
+    plt.imshow(screen_buffer.image.numpy())
     plt.show()

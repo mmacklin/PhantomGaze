@@ -1,9 +1,7 @@
 # Geometries
 
-from numba import cuda
+import warp as wp
 import math
-
-from phantomgaze.utils.math import length, clamp, dot, sign, quaternion_multiply
 
 class Geometry:
     """
@@ -13,7 +11,7 @@ class Geometry:
 
     Parameters
     ----------
-    sdf : cuda.jit function
+    sdf : Warp function
         The signed distance function
     lower_bound : tuple
         Lower bound of the signed distance function
@@ -30,20 +28,20 @@ class Geometry:
         self.upper_bound = upper_bound
         self.distance_threshold = distance_threshold
 
-        # Define the kernel for the derivative
-        @cuda.jit(device=True)
-        def sdf_derivative(pos):
-            dx = sdf((pos[0] + 0.001, pos[1], pos[2])) - sdf(
-                (pos[0] - 0.001, pos[1], pos[2])
+        # Define the kernel for the derivative        
+        def sdf_derivative(pos: wp.vec3):
+            dx = sdf(wp.vec3(pos[0] + 0.001, pos[1], pos[2])) - sdf(
+                wp.vec3(pos[0] - 0.001, pos[1], pos[2])
             )
-            dy = sdf((pos[0], pos[1] + 0.001, pos[2])) - sdf(
-                (pos[0], pos[1] - 0.001, pos[2])
+            dy = sdf(wp.vec3(pos[0], pos[1] + 0.001, pos[2])) - sdf(
+                wp.vec3(pos[0], pos[1] - 0.001, pos[2])
             )
-            dz = sdf((pos[0], pos[1], pos[2] + 0.001)) - sdf(
-                (pos[0], pos[1], pos[2] - 0.001)
+            dz = sdf(wp.vec3(pos[0], pos[1], pos[2] + 0.001)) - sdf(
+                wp.vec3(pos[0], pos[1], pos[2] - 0.001)
             )
-            return (dx, dy, dz)
-        self.derivative = sdf_derivative
+            return wp.vec3(dx, dy, dz)
+        
+        self.derivative = wp.Function(sdf_derivative, key=f"sdf_derivative_{id(self)}", namespace="")
 
     def __add__(self, other):
         """
@@ -64,10 +62,11 @@ class Geometry:
         sdf = self.sdf
         other_sdf = other.sdf
 
-        # Define the new signed distance function
-        @cuda.jit(device=True)
-        def new_sdf(pos):
-            return min(sdf(pos), other_sdf(pos))
+        # Define the new signed distance function        
+        def new_sdf(pos: wp.vec3):
+            return wp.min(sdf(pos), other_sdf(pos))
+
+        new_sdf = wp.Function(new_sdf, key=f"sdf_union_{id(self)}", namespace="")
 
         # Expand the bounds
         lower_bound = (
@@ -100,9 +99,10 @@ class Geometry:
         """
 
         # Define the new signed distance function
-        @cuda.jit(device=True)
-        def new_sdf(pos):
-            return max(self.sdf(pos), -other.sdf(pos))
+        def new_sdf(pos: wp.vec3):
+            return wp.max(self.sdf(pos), -other.sdf(pos))
+
+        new_sdf = wp.Function(new_sdf, key=f"sdf_difference_{id(self)}", namespace="")
 
         # Return the new signed distance function
         return Geometry(new_sdf, self.lower_bound, self.upper_bound, self.distance_threshold)
@@ -123,9 +123,10 @@ class Geometry:
         """
 
         # Define the new signed distance function
-        @cuda.jit(device=True)
-        def new_sdf(pos):
-            return max(self.sdf(pos), other.sdf(pos))
+        def new_sdf(pos: wp.vec3):
+            return wp.max(self.sdf(pos), other.sdf(pos))
+
+        new_sdf = wp.Function(new_sdf, key=f"sdf_intersect_{id(self)}", namespace="")
 
         # Shrink the bounds
         lower_bound = (
@@ -160,10 +161,13 @@ class Geometry:
         # Get the signed distance function
         sdf = self.sdf
 
-        # Define the new signed distance function
-        @cuda.jit(device=True)
-        def new_sdf(pos):
-            return sdf((pos[0] - translation[0], pos[1] - translation[1], pos[2] - translation[2]))
+        translation = wp.constant(wp.vec3(translation))
+
+        # Define the new signed distance function        
+        def new_sdf(pos: wp.vec3):
+            return sdf(wp.vec3(pos[0] - translation[0], pos[1] - translation[1], pos[2] - translation[2]))
+        
+        new_sdf = wp.Function(new_sdf, key=f"translate_sdf_{id(self)}", namespace="")
 
         # Get new bounds
         lower_bound = (
@@ -209,20 +213,24 @@ class Geometry:
         # Get the signed distance function
         sdf = self.sdf
 
+        # convert to Warp quaternion convention of i, j, k, r
+        qx = wp.constant(q[1])
+        qy = wp.constant(q[2])
+        qz = wp.constant(q[3])
+        qw = wp.constant(q[0])
+
         # Define the new signed distance function
-        @cuda.jit(device=True)
-        def new_sdf(pos):
-            # Convert pos to quaternion form
-            pos_q = (0, pos[0], pos[1], pos[2])
-    
+        #@wp.func
+        def new_sdf(pos: wp.vec3):
+               
             # Perform quaternion multiplication: q * pos * q_inv
-            pos_rotated = quaternion_multiply(
-                quaternion_multiply(q, pos_q),
-                q_inv
-            )
+            q = wp.quat(qx, qy, qz, qw)
+            pos_rotated = wp.quat_rotate(q, pos)
     
             # Extract the rotated position vector
-            return sdf((pos_rotated[1], pos_rotated[2], pos_rotated[3]))
+            return sdf(pos_rotated)
+
+        new_sdf = wp.Function(new_sdf, key=f"rotate_sdf_{id(self)}", namespace="")
 
         # Return the new signed distance function
         # TODO: Fix the bounds
@@ -242,10 +250,14 @@ class Sphere(Geometry):
     """
 
     def __init__(self, radius, center=(0.0, 0.0, 0.0)):
+        
+        center = wp.constant(wp.vec3(center))
+
         # Define the signed distance function
-        @cuda.jit(device=True)
-        def sdf(pos):
-            return length((pos[0] - center[0], pos[1] - center[1], pos[2] - center[2])) - radius
+        def sdf(pos: wp.vec3):
+            return wp.length(pos - center) - radius
+
+        sdf = wp.Function(sdf, key=f"sdf_sphere_{id(self)}", namespace="")
 
         # Define the bounds
         lower_bound = (-radius+center[0], -radius+center[1], -radius+center[2])
@@ -271,36 +283,43 @@ class BoxFrame(Geometry):
     """
 
     def __init__(self, lower_bound, upper_bound, thickness):
+        
+
+        lower = wp.constant(wp.vec3(lower_bound))
+        upper = wp.constant(wp.vec3(upper_bound))
+        thickness = wp.constant(thickness)
+
         # Define the signed distance function
-        @cuda.jit(device=True)
-        def sdf(pos):
+        def sdf(pos: wp.vec3):
             # Compute size of the box frame
-            size = (upper_bound[0] - lower_bound[0], upper_bound[1] - lower_bound[1], upper_bound[2] - lower_bound[2])
+            size = wp.vec3(upper[0] - lower[0], upper[1] - lower[1], upper[2] - lower[2])
         
             # Compute the center of the box frame
-            center = (lower_bound[0] + size[0] / 2, lower_bound[1] + size[1] / 2, lower_bound[2] + size[2] / 2)
+            center = wp.vec3(lower[0] + size[0] / 2.0, lower[1] + size[1] / 2.0, lower[2] + size[2] / 2.0)
         
             # Compute the point position relative to the center
-            p = (pos[0] - center[0], pos[1] - center[1], pos[2] - center[2])
+            p = wp.vec3(pos[0] - center[0], pos[1] - center[1], pos[2] - center[2])
         
             # Compute the SDF
-            p = (abs(p[0]) - size[0] / 2, abs(p[1]) - size[1] / 2, abs(p[2]) - size[2] / 2)
-            q = (
+            p = wp.vec3(abs(p[0]) - size[0] / 2.0, abs(p[1]) - size[1] / 2.0, abs(p[2]) - size[2] / 2.0)
+            q = wp.vec3(
                 abs(p[0] + thickness) - thickness,
                 abs(p[1] + thickness) - thickness,
-                abs(p[2] + thickness) - thickness,
+                abs(p[2] + thickness) - thickness)
+            
+            e_x = wp.length(wp.vec3(wp.max(p[0], 0.0), wp.max(q[1], 0.0), wp.max(q[2], 0.0))) + wp.min(
+                wp.max(p[0], wp.max(q[1], q[2])), 0.0
             )
-            e_x = length((max(p[0], 0), max(q[1], 0), max(q[2], 0))) + min(
-                max(p[0], max(q[1], q[2])), 0
+            e_y = wp.length(wp.vec3(wp.max(q[0], 0.0), wp.max(p[1], 0.0), wp.max(q[2], 0.0))) + wp.min(
+                wp.max(q[0], wp.max(p[1], q[2])), 0.0
             )
-            e_y = length((max(q[0], 0), max(p[1], 0), max(q[2], 0))) + min(
-                max(q[0], max(p[1], q[2])), 0
-            )
-            e_z = length((max(q[0], 0), max(q[1], 0), max(p[2], 0))) + min(
-                max(q[0], max(q[1], p[2])), 0
+            e_z = wp.length(wp.vec3(wp.max(q[0], 0.0), wp.max(q[1], 0.0), wp.max(p[2], 0.0))) + wp.min(
+                wp.max(q[0], wp.max(q[1], p[2])), 0.0
             )
         
-            return min(min(e_x, e_y), e_z)
+            return wp.min(wp.min(e_x, e_y), e_z)
+
+        sdf = wp.Function(sdf, key=f"sdf_box_frame_{id(self)}", namespace="")
 
         # Call the parent constructor
         super().__init__(sdf, lower_bound, upper_bound, distance_threshold=thickness/100.0)
@@ -321,21 +340,27 @@ class Cone(Geometry):
     """
 
     def __init__(self, c, h, center=(0.0, 0.0, 0.0)):
+        
+        c = wp.constant(wp.vec2(c))
+        h = wp.constant(h)
+        center = wp.constant(wp.vec3(center))
+
         # Define the signed distance function
-        @cuda.jit(device=True)
-        def sdf(pos):
+        def sdf(pos: wp.vec3):
             # Compute the point position relative to the center
-            p = (pos[0] - center[0], pos[1] - center[1], pos[2] - center[2])
+            p = wp.vec3(pos[0] - center[0], pos[1] - center[1], pos[2] - center[2])
 
             # Compute the SDF
-            q = (h * c[0] / c[1], -h)
-            w = (length((p[0], p[2])), p[1])
-            a = (w[0] - q[0] * clamp(dot(w, q) / dot(q, q), 0.0, 1.0), w[1] - q[1] * clamp(dot(w, q) / dot(q, q), 0.0, 1.0))
-            b = (w[0] - q[0] * clamp(w[0] / q[0], 0.0, 1.0), w[1] - q[1] * 1.0)
-            k = sign(q[1])
-            d = min(dot(a, a), dot(b, b))
-            s = max(k * (w[0] * q[1] - w[1] * q[0]), k * (w[1] - q[1]))
-            return d**0.5 * sign(s)
+            q = wp.vec2(h * c[0] / c[1], -h)
+            w = wp.vec2(wp.length(wp.vec2(p[0], p[2])), p[1])
+            a = wp.vec2(w[0] - q[0] * wp.clamp(wp.dot(w, q) / wp.dot(q, q), 0.0, 1.0), w[1] - q[1] * wp.clamp(wp.dot(w, q) / wp.dot(q, q), 0.0, 1.0))
+            b = wp.vec2(w[0] - q[0] * wp.clamp(w[0] / q[0], 0.0, 1.0), w[1] - q[1] * 1.0)
+            k = wp.sign(q[1])
+            d = wp.min(wp.dot(a, a), wp.dot(b, b))
+            s = wp.max(k * (w[0] * q[1] - w[1] * q[0]), k * (w[1] - q[1]))
+            return d**0.5 * wp.sign(s)
+
+        sdf = wp.Function(sdf, key=f"sdf_cone_{id(self)}", namespace="")
 
         # Define the bounds
         lower_bound = (-h + center[0], -h + center[1], -h + center[2])
@@ -360,16 +385,22 @@ class Cylinder(Geometry):
     """
 
     def __init__(self, radius, height, center=(0.0, 0.0, 0.0)):
+        
+        radius = wp.constant(radius)
+        height = wp.constant(height)
+        center = wp.constant(wp.vec3(center))
+
         # Define the signed distance function
-        @cuda.jit(device=True)
-        def sdf(pos):
+        def sdf(pos: wp.vec3):
             # Compute the point position relative to the center
-            p = (pos[0] - center[0], pos[1] - center[1], pos[2] - center[2])
+            p = pos - center
 
             # Compute the SDF
-            d = length((p[0], p[2])) - radius
-            h = abs(p[1]) - height
-            return min(max(d, h), 0.0) + length((max(d, 0.0), max(h, 0.0)))
+            d = wp.length(wp.vec2(p[0], p[2])) - radius
+            h = wp.abs(p[1]) - height
+            return wp.min(wp.max(d, h), 0.0) + wp.length(wp.vec2(wp.max(d, 0.0), wp.max(h, 0.0)))
+
+        sdf = wp.Function(sdf, key=f"sdf_cylinder_{id(self)}", namespace="")
 
         # Define the bounds
         lower_bound = (-radius + center[0], -height + center[1], -radius + center[2])

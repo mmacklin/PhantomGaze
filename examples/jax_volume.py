@@ -23,9 +23,12 @@ if __name__ == "__main__":
     # Create camera object
     camera = pg.Camera(position=(0.0, 1.5, 6.0), focal_point=(0.0, 0.0, 0.0), view_up=(0.0, 1.0, 0.0))
     
+    # Create screen buffer    
+    screen_buffer = pg.ScreenBuffer.from_camera(camera)
+
     # Render the volume plot
     screen_buffer = pg.render.volume(sin_volume, camera, colormap=colormap, screen_buffer=screen_buffer)
 
     # Show the rendered image
-    plt.imshow(screen_buffer.image.get())
+    plt.imshow(screen_buffer.image.numpy())
     plt.show()

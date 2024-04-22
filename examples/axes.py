@@ -15,5 +15,5 @@ if __name__ == "__main__":
     screen_buffer = pg.render.axes(size=1.0, center=(0.0, 0.0, 0.0), camera=camera)
 
     # Plot the result
-    plt.imshow(screen_buffer.image.get())
+    plt.imshow(screen_buffer.image.numpy())
     plt.show()

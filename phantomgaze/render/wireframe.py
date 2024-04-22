@@ -13,7 +13,7 @@ def wireframe(
         upper_bound,
         thickness,
         camera,
-        color=SolidColor(),
+        color=None,
         screen_buffer=None):
     """
     Renders a wireframe.
@@ -33,6 +33,9 @@ def wireframe(
     screen_buffer : phantomgaze.ScreenBuffer
         The screen buffer to render the wireframe to.
     """
+
+    if color == None:
+        color = SolidColor()
 
     # Get the screen buffer
     if screen_buffer is None:

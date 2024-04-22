@@ -61,7 +61,7 @@ if __name__ == "__main__":
         # Render the box frame
         screen_buffer = pg.render.geometry(box_frame, camera, color=box_frame_color, screen_buffer=screen_buffer)
 
-        return screen_buffer.image.get(), screen_buffer.depth_buffer.get()
+        return screen_buffer.image.numpy(), screen_buffer.depth_buffer.numpy()
     
     # Create a figure for plotting
     fig, ax = plt.subplots(1, 2)

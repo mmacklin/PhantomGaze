@@ -6,7 +6,7 @@ import matplotlib.pyplot as plt
 import phantomgaze as pg
 
 if __name__ == "__main__":
-    # Create sin feild to make volume plot from
+    # Create sin field to make volume plot from
     X = cp.linspace(-1, 1, 256)
     Y = cp.linspace(-1, 1, 256)
     Z = cp.linspace(-1, 1, 256)
@@ -25,7 +25,7 @@ if __name__ == "__main__":
 
     # Create screen buffer
     screen_buffer = pg.ScreenBuffer.from_camera(camera)
-   
+
     # Render the axes
     screen_buffer = pg.render.axes(size=0.1, center=(-1.5, -1.5, 1.0), camera=camera)
 
@@ -36,5 +36,5 @@ if __name__ == "__main__":
     screen_buffer = pg.render.volume(sin_volume, camera, colormap=colormap, screen_buffer=screen_buffer)
 
     # Show the rendered image
-    plt.imshow(screen_buffer.image.get())
+    plt.imshow(screen_buffer.image.numpy())
     plt.show()

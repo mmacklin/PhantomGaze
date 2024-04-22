@@ -1,6 +1,7 @@
 # Colormap class for plots
 
 import cupy as cp 
+import warp as wp
 import numpy as np
 import matplotlib.pyplot as plt
 import matplotlib.cm as cm
@@ -76,8 +77,8 @@ class Colormap(Coloring):
 
         # Get the colormap
         self.cmap = cm.get_cmap(name, num_table_values)
-        self.color_map_array = cp.array([self.cmap(i) for i in range(num_table_values)])
-
+        colors = np.array([self.cmap(i) for i in range(num_table_values)])
+        
         # Set the opacity
         if (opacity is None):
             self.opaque = True
@@ -85,12 +86,18 @@ class Colormap(Coloring):
             self.opaque = True
         elif isinstance(opacity, float) and opacity < 1.0:
             self.opaque = False
-            self.color_map_array[:, 3] = opacity
-        elif isinstance(opacity, (list, tuple, cp.ndarray, np.ndarray)):
+            colors[:, 3] = opacity
+        elif isinstance(opacity, cp.ndarray):
             self.opaque = False
-            self.color_map_array[:, 3] = cp.array(opacity)
+            colors[:, 3] = opacity.get()
+        elif isinstance(opacity, (list, tuple, np.ndarray)):
+            self.opaque = False
+            colors[:, 3] = np.array(opacity)
         else:
             raise TypeError('Invalid opacity type.')
+        
+        self.color_map_array = wp.array(colors, dtype=wp.float32)
+
 
 class SolidColor(Coloring):
     """A coloring class for solid colors.
@@ -111,7 +118,7 @@ class SolidColor(Coloring):
             ):
         self.vmin = 0.0 # Not used
         self.vmax = 1.0
-        self.color_map_array = cp.array([[color[0], color[1], color[2], opacity]])
+        self.color_map_array = wp.array([[color[0], color[1], color[2], opacity]], dtype=wp.float32)
         self.nan_color = color # Not used
         self.nan_opacity = 1.0
         if opacity == 1.0:

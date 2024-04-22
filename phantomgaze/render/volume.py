@@ -6,29 +6,30 @@ from numba import cuda
 
 from phantomgaze import ScreenBuffer
 from phantomgaze import Colormap, SolidColor
-from phantomgaze.utils.math import normalize, dot, cross
+#from phantomgaze.utils.math import normalize, dot, cross
 from phantomgaze.render.camera import calculate_ray_direction
 from phantomgaze.render.utils import sample_array, sample_array_derivative, ray_intersect_box
 from phantomgaze.render.color import scalar_to_color
 
+import warp as wp
 
-@cuda.jit
+@wp.kernel
 def volume_kernel(
-        volume_array,
-        spacing,
-        origin,
-        camera_position,
-        camera_focal,
-        camera_up,
-        max_depth,
-        color_map_array,
-        vmin,
-        vmax,
-        nan_color,
-        nan_opacity,
-        depth_buffer,
-        transparent_pixel_buffer,
-        revealage_buffer):
+        volume_array: wp.array3d(dtype=wp.float32),
+        spacing: wp.vec3,
+        origin: wp.vec3,
+        camera_position: wp.vec3,
+        camera_focal: wp.vec3,
+        camera_up: wp.vec3,
+        max_depth: float,
+        color_map_array: wp.array2d(dtype=float),
+        vmin: float,
+        vmax: float,
+        nan_color: wp.vec3,
+        nan_opacity: float,
+        depth_buffer: wp.array2d(dtype=float),
+        transparent_pixel_buffer: wp.array3d(dtype=float),
+        revealage_buffer: wp.array2d(dtype=float)):
     """Kernel for rendering a volume.
 
     Parameters
@@ -66,7 +67,7 @@ def volume_kernel(
     """
 
     # Get the x and y indices
-    x, y = cuda.grid(2)
+    x, y = wp.tid()
 
     # Make sure the indices are in bounds
     if x >= transparent_pixel_buffer.shape[1] or y >= transparent_pixel_buffer.shape[0]:
@@ -74,15 +75,14 @@ def volume_kernel(
 
     # Get ray direction
     ray_direction = calculate_ray_direction(
-            x, y, transparent_pixel_buffer.shape,
+            x, y, transparent_pixel_buffer.shape[0], transparent_pixel_buffer.shape[1],
             camera_position, camera_focal, camera_up)
 
     # Get volume upper bound
-    volume_upper = (
-        origin[0] + spacing[0] * volume_array.shape[0],
-        origin[1] + spacing[1] * volume_array.shape[1],
-        origin[2] + spacing[2] * volume_array.shape[2]
-    )
+    volume_upper = wp.vec3(
+        origin[0] + spacing[0] * float(volume_array.shape[0]),
+        origin[1] + spacing[1] * float(volume_array.shape[1]),
+        origin[2] + spacing[2] * float(volume_array.shape[2]))
 
     # Get the intersection of the ray with the volume
     t0, t1 = ray_intersect_box(
@@ -93,14 +93,13 @@ def volume_kernel(
         return
 
     # Get the starting point of the ray
-    ray_pos = (
+    ray_pos = wp.vec3(
         camera_position[0] + t0 * ray_direction[0],
         camera_position[1] + t0 * ray_direction[1],
-        camera_position[2] + t0 * ray_direction[2]
-    )
+        camera_position[2] + t0 * ray_direction[2])
 
     # Get the step size
-    step_size = min(spacing[0], min(spacing[1], spacing[2]))
+    step_size = wp.min(spacing[0], wp.min(spacing[1], spacing[2]))
 
     # Start the ray marching
     distance = t0
@@ -134,11 +133,11 @@ def volume_kernel(
         revealage_buffer[y, x] *= (1.0 - color[3] * weight * step_size)
 
         # Increment the distance
-        ray_pos = (
+        ray_pos = wp.vec3(
             ray_pos[0] + step_size * ray_direction[0],
             ray_pos[1] + step_size * ray_direction[1],
-            ray_pos[2] + step_size * ray_direction[2]
-        )
+            ray_pos[2] + step_size * ray_direction[2])
+        
         distance += step_size
 
 
@@ -163,19 +162,12 @@ def volume(volume, camera, colormap=None, screen_buffer=None):
     if screen_buffer is None:
         screen_buffer = ScreenBuffer.from_camera(camera)
 
-    # Set up thread blocks
-    threads_per_block = (16, 16)
-    blocks = (
-        (screen_buffer.width + threads_per_block[0] - 1) // threads_per_block[0],
-        (screen_buffer.height + threads_per_block[1] - 1) // threads_per_block[1]
-    )
-
     # Get colormap if necessary
     if colormap is None:
         colormap = Colormap('jet', float(volume.array.min()), float(volume.array.max()))
 
     # Run kernel
-    volume_kernel[blocks, threads_per_block](
+    wp.launch(volume_kernel, dim=[screen_buffer.width, screen_buffer.height], inputs=[
         volume.array,
         volume.spacing,
         volume.origin,
@@ -190,7 +182,7 @@ def volume(volume, camera, colormap=None, screen_buffer=None):
         colormap.nan_opacity,
         screen_buffer.depth_buffer,
         screen_buffer.transparent_pixel_buffer,
-        screen_buffer.revealage_buffer
+        screen_buffer.revealage_buffer]
     )
 
     return screen_buffer

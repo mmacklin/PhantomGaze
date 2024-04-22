@@ -1,6 +1,7 @@
 # Simple example of rendering a contour of a sphere using phantomgaze
 
 import cupy as cp
+
 import matplotlib.pyplot as plt
 
 import phantomgaze as pg
@@ -36,5 +37,5 @@ if __name__ == "__main__":
     screen_buffer = pg.render.contour(sphere_volume, camera, threshold=-0.75, color=color_volume, colormap=colormap, screen_buffer=screen_buffer)
 
     # Show the rendered image
-    plt.imshow(screen_buffer.image.get())
+    plt.imshow(screen_buffer.image.numpy())
     plt.show()

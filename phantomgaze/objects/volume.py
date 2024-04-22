@@ -1,6 +1,6 @@
 # Volume class for 3D volume data
 
-from phantomgaze.utils.backends import backend_to_cupy
+import phantomgaze.utils
 
 class Volume:
     """
@@ -21,7 +21,7 @@ class Volume:
     """
 
     def __init__(self, array, spacing, origin):
-        self.array = backend_to_cupy(array)
+        self.array = phantomgaze.utils.to_warp(array)
         self.spacing = spacing
         self.origin = origin
         self.shape = array.shape

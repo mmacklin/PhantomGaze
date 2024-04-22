@@ -1,10 +1,8 @@
 # Color helper functions
+import warp as wp
 
-import numba
-from numba import cuda
-
-@cuda.jit
-def scalar_to_color(value, color_map_array, vmin, vmax):
+@wp.func
+def scalar_to_color(value: float, color_map_array: wp.array2d(dtype=float), vmin: float, vmax: float):
     """Convert a scalar value to a color.
 
     Parameters
@@ -23,13 +21,13 @@ def scalar_to_color(value, color_map_array, vmin, vmax):
     value = min(max(value, vmin), vmax)
 
     # Get the index
-    index = int((value - vmin) / (vmax - vmin) * (color_map_array.shape[0] - 1))
+    index = int((value - vmin) / (vmax - vmin) * float(color_map_array.shape[0] - 1))
 
     # Set the color
-    color = (
+    color = wp.vec4(
         color_map_array[index, 0],
         color_map_array[index, 1],
         color_map_array[index, 2],
-        color_map_array[index, 3],
-    )
+        color_map_array[index, 3])
+    
     return color

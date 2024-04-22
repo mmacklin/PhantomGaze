@@ -1,16 +1,17 @@
 # functions for rendering geometry
 
 import cupy as cp
-import numba
-from numba import cuda
+import warp as wp
 
 from phantomgaze import ScreenBuffer
 from phantomgaze import SolidColor
 from phantomgaze.objects import Geometry
-from phantomgaze.utils.math import normalize, dot
+#from phantomgaze.utils.math import normalize, dot
 from phantomgaze.render.camera import calculate_ray_direction
 
 _geometry_render_kernels = {}
+
+wp.set_module_options({"enable_backward": False})
 
 def kernel_constructor_render_geometry(sdf, sdf_derivative, opaque=True):
     """
@@ -20,9 +21,9 @@ def kernel_constructor_render_geometry(sdf, sdf_derivative, opaque=True):
     Parameters
     ----------
     sdf : function
-        The signed distance function to render. Must be a numba.jit(device=True) function.
+        The signed distance function to render. Must be a wp.func object
     sdf_derivative : function
-        The signed distance function derivative. Must be a numba.jit(device=True) function.
+        The signed distance function derivative. Must be a wp.func object
     opaque : bool, optional
         Whether the geometry is opaque or not, by default True
 
@@ -38,19 +39,18 @@ def kernel_constructor_render_geometry(sdf, sdf_derivative, opaque=True):
         return _geometry_render_kernels[(sdf, sdf_derivative, opaque)]
 
     # Define the kernel
-    @cuda.jit
     def render_kernel(
-            distance_threshold,
-            camera_position,
-            camera_focal,
-            camera_up,
-            max_depth,
-            color_map_array,
-            opaque_pixel_buffer,
-            depth_buffer,
-            normal_buffer,
-            transparency_pixel_buffer,
-            revealage_buffer,
+            distance_threshold: float,
+            camera_position: wp.vec3,
+            camera_focal: wp.vec3,
+            camera_up: wp.vec3,
+            max_depth: float,
+            color_map_array: wp.array2d(dtype=float),
+            opaque_pixel_buffer: wp.array3d(dtype=float),
+            depth_buffer: wp.array2d(dtype=float),
+            normal_buffer: wp.array3d(dtype=float),
+            transparency_pixel_buffer: wp.array3d(dtype=float),
+            revealage_buffer: wp.array2d(dtype=float)
             ):
         """
         Renders a signed distance function.
@@ -82,7 +82,7 @@ def kernel_constructor_render_geometry(sdf, sdf_derivative, opaque=True):
         """
 
         # Get the x and y indices
-        x, y = cuda.grid(2)
+        x, y = wp.tid()
     
         # Make sure the indices are in bounds
         if x >= opaque_pixel_buffer.shape[1] or y >= opaque_pixel_buffer.shape[0]:
@@ -90,23 +90,24 @@ def kernel_constructor_render_geometry(sdf, sdf_derivative, opaque=True):
     
         # Get ray direction
         ray_direction = calculate_ray_direction(
-                x, y, opaque_pixel_buffer.shape,
+                x, y, opaque_pixel_buffer.shape[0], opaque_pixel_buffer.shape[1],
                 camera_position, camera_focal, camera_up)
     
         # Get the starting point of the ray
-        ray_pos = (
+        ray_pos = wp.vec3(
             camera_position[0],
             camera_position[1],
             camera_position[2]
         )
 
         # Distance traveled by the ray
-        distance_traveled = 0
+        distance_traveled = wp.float(0.0)
 
         # Ray march
         while distance_traveled < max_depth:
             # Get the distance to the object
-            distance = abs(sdf(ray_pos))
+            distance = wp.float(0.0)
+            distance = wp.abs(sdf(ray_pos))
 
             # Update the distance traveled
             distance_traveled += distance
@@ -116,7 +117,7 @@ def kernel_constructor_render_geometry(sdf, sdf_derivative, opaque=True):
                 return
 
             # Update the ray position
-            ray_pos = (
+            ray_pos = wp.vec3(
                 ray_pos[0] + ray_direction[0] * distance,
                 ray_pos[1] + ray_direction[1] * distance,
                 ray_pos[2] + ray_direction[2] * distance
@@ -126,12 +127,12 @@ def kernel_constructor_render_geometry(sdf, sdf_derivative, opaque=True):
             if abs(distance) < distance_threshold:
                 # Get intensity TODO: Maybe change this
                 gradient = sdf_derivative(ray_pos)
-                gradient = normalize(gradient)
-                intensity = dot(gradient, ray_direction)
-                intensity = abs(intensity)
+                gradient = wp.normalize(gradient)
+                intensity = wp.dot(gradient, ray_direction)
+                intensity = wp.abs(intensity)
 
                 # Get the color and opacity
-                color = (
+                color = wp.vec3(
                     color_map_array[0, 0],
                     color_map_array[0, 1],
                     color_map_array[0, 2]
@@ -174,7 +175,7 @@ def kernel_constructor_render_geometry(sdf, sdf_derivative, opaque=True):
                     while distance < distance_threshold:
     
                         # Take a small step
-                        ray_pos = (
+                        ray_pos = wp.vec3(
                             ray_pos[0] + ray_direction[0] * distance_threshold,
                             ray_pos[1] + ray_direction[1] * distance_threshold,
                             ray_pos[2] + ray_direction[2] * distance_threshold
@@ -184,12 +185,17 @@ def kernel_constructor_render_geometry(sdf, sdf_derivative, opaque=True):
                         distance_traveled += distance_threshold
     
                         # Get the new signed distance
-                        distance = abs(sdf(ray_pos))
+                        distance = wp.abs(sdf(ray_pos))
             
-    # Add the kernel to the dictionary
-    _geometry_render_kernels[(sdf, sdf_derivative, opaque)] = render_kernel
 
-    return render_kernel
+    module = wp.context.Module(f"render_{id(render_kernel)}", loader=None)
+
+    kernel = wp.Kernel(render_kernel, module=module, key=f"render_kernel_{id(render_kernel)}")
+
+    # Add the kernel to the dictionary
+    _geometry_render_kernels[(sdf, sdf_derivative, opaque)] = kernel
+
+    return kernel
 
 def geometry(
         geometry,
@@ -215,18 +221,11 @@ def geometry(
     if screen_buffer is None:
         screen_buffer = ScreenBuffer.from_camera(camera)
 
-    # Set the block size
-    threads_per_block = (16, 16)
-    blocks = (
-        (screen_buffer.width + threads_per_block[0] - 1) // threads_per_block[0],
-        (screen_buffer.height + threads_per_block[1] - 1) // threads_per_block[1]
-    )
-
     # Construct the kernel
     render_kernel = kernel_constructor_render_geometry(geometry.sdf, geometry.derivative, color.opaque)
 
     # Run the kernel
-    render_kernel[blocks, threads_per_block](
+    wp.launch(render_kernel, dim=[screen_buffer.width, screen_buffer.height], inputs=[
         geometry.distance_threshold,
         camera.position,
         camera.focal_point,
@@ -237,7 +236,6 @@ def geometry(
         screen_buffer.depth_buffer,
         screen_buffer.normal_buffer,
         screen_buffer.transparent_pixel_buffer,
-        screen_buffer.revealage_buffer,
-    )
+        screen_buffer.revealage_buffer])
 
     return screen_buffer

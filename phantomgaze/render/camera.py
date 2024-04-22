@@ -1,19 +1,18 @@
 # Render functions for volumes
 
-import math
-import numba
-from numba import cuda
+import warp as wp
 
-from phantomgaze.utils.math import normalize, dot, cross
+#from phantomgaze.utils.math import normalize, dot, cross
 
-@cuda.jit(device=True)
+@wp.func
 def calculate_ray_direction(
-        x,
-        y,
-        img_shape,
-        camera_position,
-        camera_focal,
-        camera_up):
+        x: int,
+        y: int,
+        img_width: int,
+        img_height: int,
+        camera_position: wp.vec3,
+        camera_focal: wp.vec3,
+        camera_up: wp.vec3):
     """
     Calculate the direction of a ray from the camera to the image plane.
 
@@ -23,8 +22,10 @@ def calculate_ray_direction(
         The x coordinate of the pixel.
     y : int
         The y coordinate of the pixel.
-    img_shape : tuple
-        The shape of the image.
+    img_width : int
+        The width of the image.
+    img_height : int
+        The height of the image.
     camera_position : tuple
         The position of the camera.
     camera_focal : tuple
@@ -38,43 +39,41 @@ def calculate_ray_direction(
     """
 
     # Compute base vectors
-    forward = (
+    forward = wp.vec3(
         camera_focal[0] - camera_position[0],
         camera_focal[1] - camera_position[1],
-        camera_focal[2] - camera_position[2],
-    )
-    forward = normalize(forward)
-    right = cross(forward, camera_up)
-    right = normalize(right)
-    up = cross(right, forward)
+        camera_focal[2] - camera_position[2])
+    
+    forward = wp.normalize(forward)
+    right = wp.cross(forward, camera_up)
+    right = wp.normalize(right)
+    up = wp.cross(right, forward)
 
     # Determine the center of the image
-    center = (
+    center = wp.vec3(
         camera_position[0] + forward[0],
         camera_position[1] + forward[1],
-        camera_position[2] + forward[2],
-    )
+        camera_position[2] + forward[2])
 
     # Calculate the location on the image plane corresponding (x, y)
-    aspect_ratio = img_shape[1] / img_shape[0]
-    s = (x - img_shape[1] / 2) / img_shape[1]
-    t = (y - img_shape[0] / 2) / img_shape[0]
+    aspect_ratio = float(img_height) / float(img_width)
+    s = (float(x) - float(img_height) / 2.0) / float(img_height)
+    t = (float(y) - float(img_width) / 2.0) / float(img_width)
 
     # Adjust for aspect ratio and field of view (assuming 90 degrees here)
-    s *= aspect_ratio * math.tan(math.pi / 4.0)
-    t *= math.tan(math.pi / 4.0)
-    point_on_image_plane = (
+    s *= aspect_ratio * wp.tan(wp.pi / 4.0)
+    t *= wp.tan(wp.pi / 4.0)
+    point_on_image_plane = wp.vec3(
         center[0] + s * right[0] + t * up[0],
         center[1] + s * right[1] + t * up[1],
-        center[2] + s * right[2] + t * up[2],
-    )
+        center[2] + s * right[2] + t * up[2])
 
     # Calculate the ray direction
-    ray_direction = (
+    ray_direction = wp.vec3(
         point_on_image_plane[0] - camera_position[0],
         point_on_image_plane[1] - camera_position[1],
-        point_on_image_plane[2] - camera_position[2],
-    )
-    ray_direction = normalize(ray_direction)
+        point_on_image_plane[2] - camera_position[2])
+    
+    ray_direction = wp.normalize(ray_direction)
 
     return ray_direction

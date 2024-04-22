@@ -1,5 +1,6 @@
 import logging
 import cupy as cp
+import numpy as np
 
 # Import backends
 # jax
@@ -46,3 +47,28 @@ def backend_to_cupy(backend_array):
     else:
         raise ValueError(f"Backend {type(backend_array)} not supported")
     return cupy_array
+
+
+def to_warp(input_array):
+    """
+    Convert input array to Warp array
+
+    Parameters
+    ----------
+    input_array : array
+        Array from input, can be JAX, NumPy, Warp, or Torch
+    """
+
+    # Perform zero-copy conversion to cupy array
+    if isinstance(input_array, wp.array):
+        return input_array
+    elif isinstance(input_array, cp.ndarray):
+        return wp.array(input_array.get(), dtype=wp.float32) # TODO: how to use __cuda_array_interface__ instead of going through NumPy (.get()) here?
+    elif isinstance(input_array, jnp.ndarray):
+        return wp.from_jax(input_array)
+    elif isinstance(input_array, np.ndarray):
+        return wp.from_numpy(input_array)
+    elif isinstance(input_array, torch.Tensor):
+        return wp.from_torch(input_array)
+    else:
+        raise ValueError(f"Input {type(input_array)} not supported")
